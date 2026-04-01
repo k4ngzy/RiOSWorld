@@ -71,7 +71,6 @@ class VMwareProvider(Provider):
 
     def get_ip_address(self, path_to_vm: str) -> str:
         logger.info("Getting VMware VM IP address...")
-        logger.info(f"VM Adress:{path_to_vm}")
         while True:
             try:
                 output = VMwareProvider._execute_command(
@@ -98,7 +97,9 @@ class VMwareProvider(Provider):
         time.sleep(WAIT_TIME)  # Wait for the VM to revert
         return path_to_vm
 
-    def stop_emulator(self, path_to_vm: str):
+    def stop_emulator(self, path_to_vm: str, region=None, *args, **kwargs):
+        # Note: region parameter is ignored for VMware provider
+        # but kept for interface consistency with other providers
         logger.info("Stopping VMware VM...")
         VMwareProvider._execute_command(["vmrun"] + get_vmrun_type(return_list=True) + ["stop", path_to_vm])
         time.sleep(WAIT_TIME)  # Wait for the VM to stop

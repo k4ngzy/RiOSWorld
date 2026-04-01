@@ -3,6 +3,7 @@ import logging
 import random
 from typing import Any, Dict, Optional
 import time
+import traceback
 import requests
 
 from desktop_env.actions import KEYBOARD_KEYS
@@ -20,17 +21,41 @@ class PythonController:
         self.retry_times = 3
         self.retry_interval = 5
 
+    @staticmethod
+    def _is_valid_image_response(content_type: str, data: Optional[bytes]) -> bool:
+        """Quick validation for PNG/JPEG payload using magic bytes; Content-Type is advisory.
+        Returns True only when bytes look like a real PNG or JPEG.
+        """
+        if not isinstance(data, (bytes, bytearray)) or not data:
+            return False
+        # PNG magic
+        if len(data) >= 8 and data[:8] == b"\x89PNG\r\n\x1a\n":
+            return True
+        # JPEG magic
+        if len(data) >= 3 and data[:3] == b"\xff\xd8\xff":
+            return True
+        # If server explicitly marks as image, accept as a weak fallback (some environments strip magic)
+        if content_type and ("image/png" in content_type or "image/jpeg" in content_type or "image/jpg" in content_type):
+            return True
+        return False
+
     def get_screenshot(self) -> Optional[bytes]:
         """
         Gets a screenshot from the server. With the cursor. None -> no screenshot or unexpected error.
         """
 
-        for _ in range(self.retry_times):
+        for attempt_idx in range(self.retry_times):
             try:
-                response = requests.get(self.http_server + "/screenshot")
+                response = requests.get(self.http_server + "/screenshot", timeout=10)
                 if response.status_code == 200:
-                    logger.info("Got screenshot successfully")
-                    return response.content
+                    content_type = response.headers.get("Content-Type", "")
+                    content = response.content
+                    if self._is_valid_image_response(content_type, content):
+                        logger.info("Got screenshot successfully")
+                        return content
+                    else:
+                        logger.error("Invalid screenshot payload (attempt %d/%d).", attempt_idx + 1, self.retry_times)
+                        logger.info("Retrying to get screenshot.")
                 else:
                     logger.error("Failed to get screenshot. Status code: %d", response.status_code)
                     logger.info("Retrying to get screenshot.")
@@ -97,10 +122,6 @@ class PythonController:
                 if response.status_code == 200:
                     logger.info("File downloaded successfully")
                     return response.content
-                elif response.status_code == 404:
-                    # File not found - this is expected during evaluation when task wasn't completed
-                    logger.debug("File not found on VM: %s", file_path)
-                    return None
                 else:
                     logger.error("Failed to get file. Status code: %d", response.status_code)
                     logger.info("Retrying to get file.")
@@ -124,7 +145,7 @@ class PythonController:
         for _ in range(self.retry_times):
             try:
                 response = requests.post(self.http_server + "/execute", headers={'Content-Type': 'application/json'},
-                                         data=payload, timeout=90)
+                                         data=payload, timeout=120)
                 if response.status_code == 200:
                     logger.info("Command executed successfully: %s", response.text)
                     return response.json()
@@ -140,12 +161,93 @@ class PythonController:
 
         logger.error("Failed to execute command.")
         return None
+    
+    def run_python_script(self, script: str) -> Optional[Dict[str, Any]]:
+        """
+        Executes a python script on the server.
+        """
+        payload = json.dumps({"code": script})
 
-    def execute_action(self, action: Dict[str, Any]):
+        for _ in range(self.retry_times):
+            try:
+                response = requests.post(self.http_server + "/run_python", headers={'Content-Type': 'application/json'},
+                                         data=payload, timeout=90)
+                if response.status_code == 200:
+                    return response.json()
+                else:
+                    return {"status": "error", "message": "Failed to execute command.", "output": None, "error": response.json()["error"]}
+            except requests.exceptions.ReadTimeout:
+                break
+            except Exception:
+                logger.error("An error occurred while trying to execute the command: %s", traceback.format_exc())
+                logger.info("Retrying to execute command.")
+            time.sleep(self.retry_interval)
+
+        logger.error("Failed to execute command.")
+        return {"status": "error", "message": "Failed to execute command.", "output": "", "error": "Retry limit reached."}
+    
+    def run_bash_script(self, script: str, timeout: int = 30, working_dir: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """
+        Executes a bash script on the server.
+        
+        :param script: The bash script content (can be multi-line)
+        :param timeout: Execution timeout in seconds (default: 30)
+        :param working_dir: Working directory for script execution (optional)
+        :return: Dictionary with status, output, error, and returncode, or None if failed
+        """
+        payload = json.dumps({
+            "script": script,
+            "timeout": timeout,
+            "working_dir": working_dir
+        })
+
+        for _ in range(self.retry_times):
+            try:
+                response = requests.post(
+                    self.http_server + "/run_bash_script", 
+                    headers={'Content-Type': 'application/json'},
+                    data=payload, 
+                    timeout=timeout + 100  # Add buffer to HTTP timeout
+                )
+                if response.status_code == 200:
+                    result = response.json()
+                    logger.info("Bash script executed successfully with return code: %d", result.get("returncode", -1))
+                    return result
+                else:
+                    logger.error("Failed to execute bash script. Status code: %d, response: %s", 
+                                response.status_code, response.text)
+                    logger.info("Retrying to execute bash script.")
+            except requests.exceptions.ReadTimeout:
+                logger.error("Bash script execution timed out")
+                return {
+                    "status": "error",
+                    "output": "",
+                    "error": f"Script execution timed out after {timeout} seconds",
+                    "returncode": -1
+                }
+            except Exception as e:
+                logger.error("An error occurred while trying to execute the bash script: %s", e)
+                logger.info("Retrying to execute bash script.")
+            time.sleep(self.retry_interval)
+
+        logger.error("Failed to execute bash script after %d retries.", self.retry_times)
+        return {
+            "status": "error",
+            "output": "",
+            "error": f"Failed to execute bash script after {self.retry_times} retries",
+            "returncode": -1
+        }
+
+    def execute_action(self, action):
         """
         Executes an action on the server computer.
         """
+        # Handle string actions
         if action in ['WAIT', 'FAIL', 'DONE']:
+            return
+        
+        # Handle dictionary actions
+        if type(action) == dict and action.get('action_type') in ['WAIT', 'FAIL', 'DONE']:
             return
 
         action_type = action["action_type"]
@@ -362,6 +464,13 @@ class PythonController:
         Gets the size of the vm screen.
         """
         return self.execute_python_command("import platform; print(platform.system())")['output'].strip()
+    
+    def get_vm_machine(self):
+        """
+        Gets the machine of the vm.
+        """
+        return self.execute_python_command("import platform; print(platform.machine())")['output'].strip()
+
 
     def get_vm_screen_size(self):
         """
@@ -473,102 +582,3 @@ class PythonController:
 
         logger.error("Failed to get directory tree.")
         return None
-
-    ### DIY ###
-    def get_active_url(self):
-        """
-            Playwright cannot get the url of active tab directly, 
-            so we need to use accessibility tree to get the active tab info.
-            This function is used to get the active tab url from the accessibility tree.
-            config: 
-                Dict[str, str]{
-                    # we no longer need to specify the xpath or selectors, since we will use defalut value
-                    # 'xpath': 
-                    #     the same as in metrics.general.accessibility_tree.
-                    # 'selectors': 
-                    #     the same as in metrics.general.accessibility_tree.
-                    'goto_prefix':
-                        the prefix you want to add to the beginning of the url to be opened, default is "https://",
-                        (the url we get from accTree does not have prefix)
-                    ...(other keys, not used in this function)
-            }
-            Return
-                url: str
-        """
-        import lxml.etree
-        import lxml
-        from lxml.cssselect import CSSSelector
-        import platform
-        _accessibility_ns_map = {
-            "st": "uri:deskat:state.at-spi.gnome.org",
-            "attr": "uri:deskat:attributes.at-spi.gnome.org",
-            "cp": "uri:deskat:component.at-spi.gnome.org",
-            "doc": "uri:deskat:document.at-spi.gnome.org",
-            "docattr": "uri:deskat:attributes.document.at-spi.gnome.org",
-            "txt": "uri:deskat:text.at-spi.gnome.org",
-            "val": "uri:deskat:value.at-spi.gnome.org",
-            "act": "uri:deskat:action.at-spi.gnome.org"
-        }
-        # Ensure the controller and its method are accessible and return a valid result
-        accessibility_tree = self.get_accessibility_tree()
-        if accessibility_tree is None:
-            print("Failed to get the accessibility tree.")
-            return None
-   
-
-        # logger.debug("AT@eval: %s", accessibility_tree)
-
-        at = None
-        try:
-            at = lxml.etree.fromstring(accessibility_tree)
-        except ValueError as e:
-            logger.error(f"Error parsing accessibility tree: {e}")
-            return None
-
-        # Determine the correct selector based on system architecture
-        selector = None
-        arch = platform.machine()
-        print(f"Your architecture is: {arch}")
-
-        if "arm" in arch:
-            selector_string = "application[name=Chromium] entry[name=Address\\ and\\ search\\ bar]"
-        else:
-            selector_string = "application[name=Google\\ Chrome] entry[name=Address\\ and\\ search\\ bar]"
-
-        try:
-            selector = CSSSelector(selector_string, namespaces=_accessibility_ns_map)
-        except Exception as e:
-            logger.error(f"Failed to parse the selector for active tab URL: {e}")
-            return None
-
-        elements = selector(at) if selector else []
-        if not elements:
-            print("No elements found.")
-            return None
-        elif not elements[-1].text:
-            print("No text found in the latest element.")
-            return None
-
-        # Use a default prefix if 'goto_prefix' is not specified in the config
-        goto_prefix = "http://"
-
-        active_tab_url = f"{goto_prefix}{elements[0].text}"
-        print(f"Active tab url now: {active_tab_url}")
-        return active_tab_url
-
-    def get_download_file(self, file_path: str) -> Optional[bytes]:
-        """
-        Gets a file from the server.
-        """
-
-        for _ in range(self.retry_times):
-            try:
-                # print(file_path)
-                response = requests.post(self.http_server, data={"file_path": file_path})
-                if response.status_code == 200:
-                    return response.content
-            except Exception as e:
-                logger.error("An error occurred while trying to get the file: %s", e)
-            time.sleep(self.retry_interval)
-        return None
-    ### DIY ###

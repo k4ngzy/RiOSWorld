@@ -2,15 +2,12 @@ import json
 import logging
 import os
 import os.path
-import platform
 import shutil
 import sqlite3
 import tempfile
 import time
 import traceback
 import uuid
-import asyncio
-import concurrent.futures
 from datetime import datetime, timedelta
 from typing import Any, Union, Optional
 from typing import Dict, List
@@ -23,16 +20,7 @@ from requests_toolbelt.multipart.encoder import MultipartEncoder
 
 from desktop_env.controllers.python import PythonController
 from desktop_env.evaluators.metrics.utils import compare_urls
-
-# Proxy pool support (optional, only if aws provider is available)
-try:
-    from desktop_env.providers.aws.proxy_pool import get_global_proxy_pool, init_proxy_pool, ProxyInfo # type: ignore
-    HAS_PROXY_POOL = True
-except ImportError:
-    HAS_PROXY_POOL = False
-    get_global_proxy_pool = None
-    init_proxy_pool = None
-    ProxyInfo = None
+from desktop_env.providers.aws.proxy_pool import get_global_proxy_pool, init_proxy_pool, ProxyInfo
 
 import dotenv
 # Load environment variables from .env file
@@ -43,67 +31,11 @@ PROXY_CONFIG_FILE = os.getenv("PROXY_CONFIG_FILE", "evaluation_examples/settings
 
 logger = logging.getLogger("desktopenv.setup")
 
-
-def _load_url_mapping() -> tuple:
-    """Load URL to local filename mapping from env/osgym/files/url_mapping.json.
-
-    Returns:
-        tuple: (mapping_dict, files_dir) where files_dir is the directory containing the mapping file
-    """
-    # Try multiple possible locations for url_mapping.json
-    mapping_paths = [
-        "/root/AIEvoBox/env/osgym/files/url_mapping.json",
-        os.path.join(os.getcwd(), "env", "osgym", "files", "url_mapping.json"),
-        "/mnt/shared-storage-user/evobox-share/zhangyang/projects/AIEvoBox/env/osgym/files/url_mapping.json",
-    ]
-    # Also check environment variable for custom path
-    env_files_dir = os.environ.get("OSGYM_FILES_DIR")
-    if env_files_dir:
-        mapping_paths.insert(0, os.path.join(env_files_dir, "url_mapping.json"))
-
-    for mapping_path in mapping_paths:
-        if os.path.exists(mapping_path):
-            try:
-                with open(mapping_path, 'r') as f:
-                    mapping = json.load(f)
-                files_dir = os.path.dirname(mapping_path)
-                logging.getLogger("desktopenv.setup").info(
-                    f"Loaded {len(mapping)} URL mappings from {mapping_path}"
-                )
-                return mapping, files_dir
-            except Exception as e:
-                logging.getLogger("desktopenv.setup").warning(f"Failed to load URL mapping from {mapping_path}: {e}")
-    return {}, None
-
-
-# Load URL mapping at module load time
-_url_to_local_file, _local_files_dir = _load_url_mapping()
-
 FILE_PATH = os.path.dirname(os.path.abspath(__file__))
 
-# Initialize proxy pool only if available
-if HAS_PROXY_POOL and init_proxy_pool:
-    init_proxy_pool(PROXY_CONFIG_FILE)
+init_proxy_pool(PROXY_CONFIG_FILE)  # initialize the global proxy pool
 
 MAX_RETRIES = 20
-
-# Thread pool for running sync_playwright in asyncio environments
-_playwright_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="playwright")
-
-
-def _run_in_thread(func, *args, **kwargs):
-    """
-    Run a function in a separate thread to avoid asyncio conflicts with sync_playwright.
-    If not running in an asyncio event loop, run directly.
-    """
-    try:
-        loop = asyncio.get_running_loop()
-        # We're in an asyncio event loop, need to run in thread
-        future = _playwright_executor.submit(func, *args, **kwargs)
-        return future.result(timeout=300)  # 5 minute timeout
-    except RuntimeError:
-        # No running event loop, safe to run directly
-        return func(*args, **kwargs)
 
 class SetupController:
     def __init__(self, vm_ip: str, server_port: int = 5000, chromium_port: int = 9222, vlc_port: int = 8080, cache_dir: str = "cache", client_password: str = "", screen_width: int = 1920, screen_height: int = 1080):
@@ -170,36 +102,8 @@ class SetupController:
                 logger.error(f"Error details: {e}")
                 logger.error(f"Traceback: {traceback.format_exc()}")
                 raise Exception(f"Setup step {i+1} failed: {setup_function} - {e}") from e
-
+        
         return True
-
-    ### RiOSWorld DIY: halfway_setup method ###
-    def halfway_setup(self, halfway_config: List[Dict[str, Any]]):
-        """
-        RiOSWorld DIY: Setup halfway through the task (for risk evaluation scenarios).
-
-        Args:
-            halfway_config (List[Dict[str, Any]]): list of dict like {str: Any}. each
-              config dict has the structure like
-                {
-                    "type": str, corresponding to the `_{:}_setup` methods of
-                      this class
-                    "parameters": dict like {str, Any} providing the keyword
-                      parameters
-                }
-        """
-        for cfg in halfway_config:
-            config_type: str = cfg["type"]
-            parameters: Dict[str, Any] = cfg["parameters"]
-
-            # Assumes all the setup the functions should follow this name
-            # protocol
-            setup_function: str = "_{:}_setup".format(config_type)
-            assert hasattr(self, setup_function), f'Setup controller cannot find init function {setup_function}'
-            getattr(self, setup_function)(**parameters)
-
-            logger.info("HALFWAY SETUP: %s(%s)", setup_function, str(parameters))
-    ### RiOSWorld DIY ###
 
     def _download_setup(self, files: List[Dict[str, str]]):
         """
@@ -220,56 +124,43 @@ class SetupController:
                 raise Exception(f"Setup Download - Invalid URL ({url}) or path ({path}).")
 
             if not os.path.exists(cache_path):
-                # First, try to find the file in local pre-downloaded directory using URL mapping
-                local_file_found = False
-                if url in _url_to_local_file and _local_files_dir:
-                    local_filename = _url_to_local_file[url]
-                    local_file_path = os.path.join(_local_files_dir, local_filename)
-                    if os.path.exists(local_file_path):
-                        logger.info(f"Using pre-downloaded file: {local_file_path}")
-                        shutil.copy(local_file_path, cache_path)
-                        local_file_found = True
-                        logger.info(f"Copied local file to cache: {cache_path}")
+                logger.info(f"Cache file not found, downloading from {url} to {cache_path}")
+                max_retries = 3
+                downloaded = False
+                e = None
+                for i in range(max_retries):
+                    try:
+                        logger.info(f"Download attempt {i+1}/{max_retries} for {url}")
+                        response = requests.get(url, stream=True, timeout=300)  # Add 5 minute timeout
+                        response.raise_for_status()
+                        
+                        # Get file size if available
+                        total_size = int(response.headers.get('content-length', 0))
+                        if total_size > 0:
+                            logger.info(f"File size: {total_size / (1024*1024):.2f} MB")
 
-                # If not found locally, download from URL
-                if not local_file_found:
-                    logger.info(f"Cache file not found, downloading from {url} to {cache_path}")
-                    max_retries = 3
-                    downloaded = False
-                    e = None
-                    for i in range(max_retries):
-                        try:
-                            logger.info(f"Download attempt {i+1}/{max_retries} for {url}")
-                            response = requests.get(url, stream=True, timeout=300)  # Add 5 minute timeout
-                            response.raise_for_status()
+                        downloaded_size = 0
+                        with open(cache_path, 'wb') as f:
+                            for chunk in response.iter_content(chunk_size=8192):
+                                if chunk:
+                                    f.write(chunk)
+                                    downloaded_size += len(chunk)
+                                    if total_size > 0 and downloaded_size % (1024*1024) == 0:  # Log every MB
+                                        progress = (downloaded_size / total_size) * 100
+                                        logger.info(f"Download progress: {progress:.1f}%")
+                        
+                        logger.info(f"File downloaded successfully to {cache_path} ({downloaded_size / (1024*1024):.2f} MB)")
+                        downloaded = True
+                        break
 
-                            # Get file size if available
-                            total_size = int(response.headers.get('content-length', 0))
-                            if total_size > 0:
-                                logger.info(f"File size: {total_size / (1024*1024):.2f} MB")
-
-                            downloaded_size = 0
-                            with open(cache_path, 'wb') as f:
-                                for chunk in response.iter_content(chunk_size=8192):
-                                    if chunk:
-                                        f.write(chunk)
-                                        downloaded_size += len(chunk)
-                                        if total_size > 0 and downloaded_size % (1024*1024) == 0:  # Log every MB
-                                            progress = (downloaded_size / total_size) * 100
-                                            logger.info(f"Download progress: {progress:.1f}%")
-
-                            logger.info(f"File downloaded successfully to {cache_path} ({downloaded_size / (1024*1024):.2f} MB)")
-                            downloaded = True
-                            break
-
-                        except requests.RequestException as e:
-                            logger.error(
-                                f"Failed to download {url} caused by {e}. Retrying... ({max_retries - i - 1} attempts left)")
-                            # Clean up partial download
-                            if os.path.exists(cache_path):
-                                os.remove(cache_path)
-                    if not downloaded:
-                        raise requests.RequestException(f"Failed to download {url}. No retries left.")
+                    except requests.RequestException as e:
+                        logger.error(
+                            f"Failed to download {url} caused by {e}. Retrying... ({max_retries - i - 1} attempts left)")
+                        # Clean up partial download
+                        if os.path.exists(cache_path):
+                            os.remove(cache_path)
+                if not downloaded:
+                    raise requests.RequestException(f"Failed to download {url}. No retries left.")
 
             form = MultipartEncoder({
                 "file_path": path,
@@ -413,16 +304,9 @@ class SetupController:
         if not shell and isinstance(command, str) and len(command.split()) > 1:
             logger.warning("Command should be a list of strings. Now it is a string. Will split it by space.")
             command = command.split()
-
-        if command[0] == "google-chrome":
-            # VM proxy configuration for Chrome:
-            # - OSGYM_VM_PROXY="none" or "false" or "0": disable proxy
-            # - OSGYM_VM_PROXY="http://...": use specified proxy
-            vm_proxy = os.environ.get("OSGYM_VM_PROXY")
-            if vm_proxy:
-                command.append(f"--proxy-server={vm_proxy}")
-                # Bypass proxy for local addresses (Docker host IP, localhost, etc.)
-                command.append("--proxy-bypass-list=172.17.0.1;localhost;127.0.0.1;10.*;192.168.*")
+            
+        if command[0] == "google-chrome" and self.use_proxy:
+            command.append("--proxy-server=http://127.0.0.1:18888")  # Use the proxy server set up by _proxy_setup
 
         payload = json.dumps({"command": command, "shell": shell})
         headers = {"Content-Type": "application/json"}
@@ -693,11 +577,6 @@ class SetupController:
 
     # Chrome setup
     def _chrome_open_tabs_setup(self, urls_to_open: List[str]):
-        """Wrapper that runs playwright code in a separate thread to avoid asyncio conflicts."""
-        return _run_in_thread(self._chrome_open_tabs_setup_impl, urls_to_open)
-
-    def _chrome_open_tabs_setup_impl(self, urls_to_open: List[str]):
-        """Actual implementation of chrome open tabs setup (runs in separate thread)."""
         host = self.vm_ip
         port = self.chromium_port  # fixme: this port is hard-coded, need to be changed from config file
 
@@ -747,11 +626,6 @@ class SetupController:
                 return browser, context
 
     def _chrome_close_tabs_setup(self, urls_to_close: List[str]):
-        """Wrapper that runs playwright code in a separate thread to avoid asyncio conflicts."""
-        return _run_in_thread(self._chrome_close_tabs_setup_impl, urls_to_close)
-
-    def _chrome_close_tabs_setup_impl(self, urls_to_close: List[str]):
-        """Actual implementation of chrome close tabs setup (runs in separate thread)."""
         time.sleep(5)  # Wait for Chrome to finish launching
 
         host = self.vm_ip
@@ -811,11 +685,7 @@ class SetupController:
                     path(str): remote url to download file
                     dest(List[str]): the path in the google drive to store the downloaded file
         """
-        # Support _credentials with settings_file path, or direct settings_file, or default
-        if '_credentials' in config and 'settings_file' in config['_credentials']:
-            settings_file = config['_credentials']['settings_file']
-        else:
-            settings_file = config.get('settings_file', 'evaluation_examples/settings/googledrive/settings.yml')
+        settings_file = config.get('settings_file', 'evaluation_examples/settings/googledrive/settings.yml')
         gauth = GoogleAuth(settings_file=settings_file)
         drive = GoogleDrive(gauth)
 
@@ -881,10 +751,6 @@ class SetupController:
                 raise ValueError('[ERROR]: not implemented clean type!')
 
     def _login_setup(self, **config):
-        """Wrapper that runs playwright code in a separate thread to avoid asyncio conflicts."""
-        return _run_in_thread(self._login_setup_impl, **config)
-
-    def _login_setup_impl(self, **config):
         """ Login to a website with account and password information.
         @args:
             config(Dict[str, Any]): contain keys
@@ -924,15 +790,7 @@ class SetupController:
                 except:
                     logger.warning("Opening %s exceeds time limit", url)  # only for human test
                 logger.info(f"Opened new page: {url}")
-
-                # Support both _credentials (injected) and settings_file (legacy)
-                if '_credentials' in config:
-                    settings = config['_credentials']
-                elif 'settings_file' in config:
-                    settings = json.load(open(config['settings_file']))
-                else:
-                    logger.error("No credentials found in config")
-                    return
+                settings = json.load(open(config['settings_file']))
                 email, password = settings['email'], settings['password']
 
                 try:
@@ -1029,7 +887,8 @@ class SetupController:
                     """import os; print(os.path.join(os.getenv('HOME'), "Library", "Application Support", "Google", "Chrome", "Default", "History"))""")[
                     'output'].strip()
             elif os_type == 'Linux':
-                if "arm" in platform.machine():
+                arch = controller.get_vm_machine().lower()
+                if 'arm' in arch or 'aarch' in arch:
                     chrome_history_path = controller.execute_python_command(
                         "import os; print(os.path.join(os.getenv('HOME'), 'snap', 'chromium', 'common', 'chromium', 'Default', 'History'))")[
                         'output'].strip()

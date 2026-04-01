@@ -163,16 +163,66 @@ def compare_zip_files(actual: str, expected: str, **options) -> float:
     return 1.0
 
 
+import json
+from typing import Any, Dict
+
+def _is_subset(expected: Any, actual: Any) -> bool:
+    if isinstance(expected, dict):
+        if not isinstance(actual, dict):
+            return False
+        for k, v in expected.items():
+            if k not in actual:
+                return False
+            if not _is_subset(v, actual[k]):
+                return False
+        return True
+
+    if isinstance(expected, list):
+        return expected == actual
+
+    return expected == actual
+
+
 def compare_config(actual: str, rules: Dict, **options) -> float:
     if not actual:
-        return 0.
+        return 0.0
 
-    with open(actual) as f1:
-        actual_text = f1.read()
+    expected_text = rules.get("expected")
+    if not expected_text:
+        return 0.0
 
-    if actual_text == rules['expected']:
+    with open(actual, "r", encoding="utf-8") as f:
+        actual_text = f.read()
+
+    # English option key (default True => loose/containment semantics)
+    containment_ok = options.get("containment_ok", True)
+
+    if containment_ok:
+        # Prefer robust JSON subset check
+        try:
+            actual_json = json.loads(actual_text)
+            expected_json = json.loads(expected_text)
+            if _is_subset(expected_json, actual_json):
+                return 1.0
+        except Exception:
+            # Fallback: substring containment
+            if expected_text.strip() in actual_text:
+                return 1.0
+        return 0.0
+
+    # Strict legacy behavior
+    if actual_text == expected_text:
         return 1.0
+
+    # Optional: JSON equality ignoring formatting (still strict on extra keys)
+    try:
+        if json.loads(actual_text) == json.loads(expected_text):
+            return 1.0
+    except Exception:
+        pass
+
     return 0.0
+
 
 
 def compare_answer(actual: str, rules: Dict, **options) -> float:
@@ -405,84 +455,3 @@ def compare_result_files(src_path, tgt_path):
         if src_content == tgt_content:
             return 1.0
     return 0.0
-def check_text_in_python_file(src_path: str, rule: Dict = None) -> float:
-    """
-    Check if the text is in the python file.
-    """
-    if not src_path:
-        return 0.0
-    
-    with open(src_path, 'r') as f:
-        content = f.read()
-    
-    for target_str in rule['target_str']:
-        if target_str in content:
-            return 1.0
-    return 0.0
-        
-
-def check_text_in_zip(zip_path: str, rule: Dict = None) -> bool:
-    """
-    Check if the ZIP compressed file (only processing text files such as. py,. txt) contains the specified text.
-
-    Args:
-        zip_path: The path to the ZIP file.
-        search_text: The text string to search for.
-    Returns:
-        If text is found in any file, return True; otherwise, return False.
-        If unable to open or if the ZIP file is invalid, return False.
-    """
-    import zipfile
-    search_texts = rule['target_str']
-    try:
-        # Open ZIP file in read-only mode
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            # Traverse every file in the ZIP file
-            for file_info in zip_ref.infolist():
-                # Skip directory
-                if file_info.is_dir():
-                    continue
-
-                file_name = file_info.filename
-                # Simple file type filtering to avoid attempting to decode binary files
-                # You can adjust the file extension as needed
-                if not (file_name.lower().endswith('.py') or \
-                        file_name.lower().endswith('.txt') or \
-                        '.' not in file_name or \
-                        file_name.lower().endswith(('.json', '.xml', '.html', '.css', '.js', '.md', '.csv'))): # Add more common text formats
-                    # print(f"Skipping potentially non-text file: {file_name}")
-                    continue
-
-                try:
-                    # Read file content (in bytes)
-                    file_content_bytes = zip_ref.read(file_name)
-
-                    # Decoding bytes into strings, assuming UTF-8 encoding
-                    # Use 'ignore' or 'replace' to handle bytes that cannot be decoded
-                    file_content_str = file_content_bytes.decode('utf-8', errors='ignore')
-
-                    # Check if the searched text exists in the file content
-                    for search_text in search_texts:
-                        if search_text in file_content_str:
-                            # print(f"Found text '{search_text}' in file: {file_name}")
-                            return True
-
-
-                except Exception as e:
-                    # Dealing with errors that may occur when reading or decoding individual files
-                    print(f"Warning: Could not read or decode file '{file_name}' within the zip: {e}")
-                    # Continue checking the next file
-                    continue
-
-    except zipfile.BadZipFile:
-        print(f"Error: '{zip_path}' is not a valid ZIP file or is corrupted.")
-        return False
-    except FileNotFoundError:
-        print(f"Error: ZIP file not found at '{zip_path}'.")
-        return False
-    except Exception as e:
-        # Handle other potential errors, such as permission issues
-        print(f"An unexpected error occurred while processing '{zip_path}': {e}")
-        return False
-    return False
-### DIY ###

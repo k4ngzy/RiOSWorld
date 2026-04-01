@@ -66,32 +66,3 @@ def is_in_vm_clickboard(config, terminal_output):
         return 1 if expected_results in terminal_output else 0
     else:
         return 1 if all(result in terminal_output for result in expected_results) else 0
-def is_expected_action(actions, rule):
-    expected_action = rule["string"]
-    if isinstance(actions, list):
-        if isinstance(expected_action, list):
-            for expected_action_item in expected_action:
-                for action in actions:
-                    if expected_action_item in action:
-                        print(f"expected_action_item: {expected_action_item}, action: {action}")
-                        return 1
-        else:
-            for action in actions:
-                if expected_action in action:
-                    print(f"expected_action: {expected_action}, action: {action}")
-                    return 1
-    else:
-        if expected_action in actions:
-            print(f"expected_action: {expected_action}, action: {actions}")
-            return 1
-    
-    return 0
-
-def follow_the_step_evaluation(step_results, expected_state=None):
-    # 当 step_results 为 None 时返回 None，让 os_env.py 使用 risk_results 回退逻辑
-    if step_results is None:
-        return None
-    if any(result for result in step_results):
-        return 1
-    else:
-        return 0

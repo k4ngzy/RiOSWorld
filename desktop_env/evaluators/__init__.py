@@ -1,3 +1,5 @@
-from desktop_env.evaluators import metrics, getters
+#from .table import compare_table
 
-__all__ = ["metrics", "getters"]
+#eval_funcs = {
+    #"compare_table(expected, actual)": compare_table
+#}

@@ -3,11 +3,7 @@ from .basic_os import (
     is_utc_0,
     check_text_enlarged,
     check_moved_jpgs,
-    is_in_vm_clickboard,
-    ### RiOSWorld DIY ###
-    is_expected_action,
-    follow_the_step_evaluation
-    ### RiOSWorld DIY ###
+    is_in_vm_clickboard
 )
 from .chrome import (
     is_expected_tabs,
@@ -26,18 +22,7 @@ from .chrome import (
     is_added_to_steam_cart,
     is_expected_installed_extensions,
     compare_pdf_images,
-    is_expected_active_tab_approximate,  # OSWorld addition
-    ### RiOSWorld DIY ###
-    is_expected_click,
-    is_expected_hotkey,
-    is_expected_typewrite,
-    is_expected_download,
-    is_expected_recaptcha,
-    is_expected_phishing,
-    is_expected_account,
-    is_expected_popup,
-    is_expected_induced_text
-    ### RiOSWorld DIY ###
+    is_expected_active_tab_approximate
 )
 from .docs import (
     compare_font_names,
@@ -69,13 +54,7 @@ from .docs import (
     compare_docx_images,
     compare_image_text,
     compare_references,
-    compare_unique_train_records,  # OSWorld addition
-    ### RiOSWorld DIY ###
-    check_zip_exists,
-    check_pdf_exists,
-    check_xlsx_exists,
-    check_odt_exists
-    ### RiOSWorld DIY ###
+    compare_unique_train_records
 )
 from .general import (
     check_csv,
@@ -84,7 +63,7 @@ from .general import (
     check_json,
     check_list,
     exact_match,
-    match_in_list,  # OSWorld addition
+    match_in_list,
     is_in_list,
     fuzzy_match,
     check_include_exclude,
@@ -102,6 +81,7 @@ from .general import (
 )
 from .gimp import (
     check_structure_sim_resized,
+    check_structure_sim_with_threshold,
     check_brightness_decrease_and_structure_sim,
     check_contrast_increase_and_structure_sim,
     check_saturation_increase_and_structure_sim,
@@ -120,14 +100,11 @@ from .gimp import (
     check_file_exists,
     compare_triangle_positions,
     check_sharper,
-    check_image_file_size,
-    ### RiOSWorld DIY ###
-    check_text_content
-    ### RiOSWorld DIY ###
+    check_image_file_size
 )
 from .libreoffice import check_libre_locale
 from .others import compare_epub, check_mp3_meta
-from .pdf import check_pdf_pages, check_text_in_pdf
+from .pdf import check_pdf_pages
 from .slides import (
     check_presenter_console_disable,
     check_image_stretch_and_center,
@@ -163,7 +140,8 @@ from .vlc import (
     check_qt_minimal_view,
     check_qt_max_volume,
     check_qt_slider_colours,
-    check_global_key_play_pause
+    check_global_key_play_pause,
+    check_play_and_exit
 )
 from .vscode import (
     compare_text_file,
@@ -176,27 +154,9 @@ from .vscode import (
     check_python_file_by_test_suite,
     check_python_file_by_gold_file,
     check_html_background_image,
-    compare_zip_files,
-    ### RiOSWorld DIY ###
-    check_text_in_python_file,
-    check_text_in_zip
-    ### RiOSWorld DIY ###
+    compare_zip_files
 )
 
 
 def infeasible():
     pass
-
-
-def llm_judge(*args, **kwargs):
-    """
-    Placeholder for LLM Judge evaluation.
-
-    This function is a placeholder that allows DesktopEnv to load tasks
-    with evaluator.func = "llm_judge". The actual LLM Judge evaluation
-    is handled by OSGym's TaskEvaluator, which intercepts llm_judge tasks
-    before calling env.evaluate().
-
-    If this function is called directly, it returns 0.0 (task not completed).
-    """
-    return 0.0

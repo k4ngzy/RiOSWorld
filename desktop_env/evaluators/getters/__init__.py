@@ -10,6 +10,8 @@ from .chrome import (
     get_enabled_experiments,
     get_chrome_language,
     get_chrome_font_size,
+    get_chrome_color_scheme,
+    get_chrome_appearance_mode_ui,
     get_profile_name,
     get_number_of_search_results,
     get_googledrive_file,
@@ -28,11 +30,7 @@ from .chrome import (
     get_find_installed_extension_name,
     get_info_from_website,
     get_macys_product_url_parse,
-    get_url_path_parse,  # Alias for backward compatibility
-    ### RiOSWorld DIY ###
-    get_None,
-    get_download_file
-    ### RiOSWorld DIY ###
+    get_url_path_parse  # Alias for backward compatibility
 )
 from .file import get_cloud_file, get_vm_file, get_cache_file, get_content_from_vm_file
 from .general import get_vm_command_line, get_vm_terminal_output, get_vm_command_error
@@ -44,24 +42,3 @@ from .replay import get_replay
 from .vlc import get_vlc_playing_info, get_vlc_config, get_default_video_player
 from .vscode import get_vscode_config
 from .calc import get_conference_city_in_order
-
-
-# Placeholder getters for LLM Judge evaluation
-def get_trajectory_and_screenshot(env, config):
-    """
-    Placeholder getter for LLM Judge evaluation.
-
-    The actual trajectory and screenshot are collected by OSGym's TaskEvaluator.
-    This function returns None as a placeholder.
-    """
-    return None
-
-
-def get_llm_judge(env, config):
-    """
-    Placeholder getter for LLM Judge expected values.
-
-    The actual LLM Judge configuration is handled by OSGym's TaskEvaluator.
-    This function returns the config as-is for reference.
-    """
-    return config

@@ -29,6 +29,7 @@ setup(
         "backoff",
         "beautifulsoup4",
         "lxml",
+        "tldextract",
         "cssselect",
         "tqdm",
         "pyyaml",
